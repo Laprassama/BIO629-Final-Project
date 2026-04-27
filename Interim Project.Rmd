@@ -1,0 +1,1039 @@
+---
+title: "Exploratory graphics"
+output:
+  pdf_document:
+    latex_engine: xelatex
+  html_document: default
+date: "2026-01-06"
+---
+
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+
+
+## R Markdown
+
+
+
+```{r}
+
+library(data.table)
+
+library(ggplot2)
+
+theme_set(theme_minimal()) # personal preference - feel free to change!
+
+```
+
+
+
+```{r}
+
+# # CHANGE THIS to match the data path on your computer
+# 
+# datadir <- "C:/Users/17790/Desktop/BIO629/msk_chord_2024/msk_chord_2024/"
+# 
+# 
+# 
+# # Load the data
+# 
+# clin_patient <- fread(paste0(datadir, "data_clinical_patient.txt"), skip = 4)
+# 
+# clin_sample  <- fread(paste0(datadir, "data_clinical_sample.txt"), skip = 4)
+# 
+# muta <- fread(paste0(datadir, "data_mutations.txt"))
+# 
+# cna  <- fread(paste0(datadir, "data_cna.txt"))
+# 
+# sv   <- fread(paste0(datadir, "data_sv.txt"))
+
+```
+
+```{r}
+library(data.table)
+
+# 基础 URL 路径
+base_url <- "https://media.githubusercontent.com/media/cBioPortal/datahub/master/public/msk_chord_2024/"
+
+# 1. Load Clinical Patient Data
+clin_patient <- fread(paste0(base_url, "data_clinical_patient.txt"), skip = 4)
+
+# 2. Load Clinical Sample Data
+clin_sample  <- fread(paste0(base_url, "data_clinical_sample.txt"), skip = 4)
+
+# 3. Load Mutation Data
+muta <- fread(paste0(base_url, "data_mutations.txt"))
+
+# 4. Load CNA (Copy Number Alteration) Data
+cna  <- fread(paste0(base_url, "data_cna.txt"))
+
+# 5. Load SV (Structural Variant) Data
+sv   <- fread(paste0(base_url, "data_sv.txt"))
+```
+
+
+# What do we have?
+
+
+
+Sample-level information
+
+```{r}
+
+colnames(clin_sample)
+
+```
+
+
+
+Patient-level information
+
+```{r}
+
+colnames(clin_patient)
+
+```
+
+```{r}
+# 1. 筛选出所有非小细胞肺癌的样本 ID
+target_type <- "Non-Small Cell Lung Cancer"
+nsclc_samples <- clin_sample[CANCER_TYPE == target_type, SAMPLE_ID]
+
+# 2. 过滤突变数据
+muta_sub <- muta[Tumor_Sample_Barcode %in% nsclc_samples]
+
+# 3. 过滤拷贝数变异 (CNA) 数据
+# 仅保留第一列基因名和属于 NSCLC 的样本列
+cna_sub <- cna[, .SD, .SDcols = c("Hugo_Symbol", intersect(names(cna), nsclc_samples))]
+
+# 4. 过滤临床数据
+clin_sample_sub <- clin_sample[CANCER_TYPE == target_type]
+# 获取对应的病人数并过滤病人表
+nsclc_patients <- unique(clin_sample_sub$PATIENT_ID)
+clin_patient_sub <- clin_patient[PATIENT_ID %in% nsclc_patients]
+
+cat("筛选完成：现在你有", length(nsclc_samples), "个肺癌样本。")
+```
+```{r}
+# 肺癌关键基因 CNA 变异频率汇总统计
+
+# 1. 定义肺癌核心基因（癌基因 + 抑癌基因）
+target_genes <- c("EGFR", "MYC", "KRAS", "CDKN2A", "PTEN", "TP53", "RB1")
+
+# 2. 提取数据并计算每个基因的变异比例
+cna_summary_data <- cna_sub[Hugo_Symbol %in% target_genes]
+
+# 将数据转为长格式进行统计
+cna_melted <- melt(cna_summary_data, id.vars = "Hugo_Symbol", variable.name = "Sample", value.name = "Level")
+
+# 统计每个基因在不同 Level 的百分比
+# Level: -2 (深删), -1 (浅删), 0 (正常), 1 (浅扩), 2 (深扩)
+summary_stats <- cna_melted[, .(Count = .N), by = .(Hugo_Symbol, Level)]
+summary_stats[, Percentage := (Count / length(nsclc_samples)) * 100]
+
+# 3. 过滤掉 Level 0 (正常二倍体)，我们只看变异的部分
+plot_stats <- summary_stats[Level != 0]
+
+# 4. 绘图：展示这些基因在肺癌中的变异分布
+ggplot(plot_stats, aes(x = reorder(Hugo_Symbol, -Percentage), y = Percentage, fill = factor(Level))) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("-2"="#053061", "-1"="#2166AC", "1"="#D6604D", "2"="#B2182B"),
+                    labels = c("HomDel (-2)", "HetLoss (-1)", "Gain (1)", "Amp (2)"),
+                    name = "CNA Type") +
+  theme_minimal() +
+  labs(title = "CNA Frequency in Lung Cancer (NSCLC)",
+       subtitle = paste("Based on", length(nsclc_samples), "samples. Showing key drivers."),
+       x = "Genes", y = "Frequency of Alteration (%)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+```{r}
+# Survival Analysis: Impact of CDKN2A Deletion in Lung Cancer
+
+# 1. 提取 CDKN2A 的 CNA 状态
+cdkn2a_status <- cna_sub[Hugo_Symbol == "CDKN2A", -1, with=FALSE]
+cdkn2a_status <- t(cdkn2a_status)
+colnames(cdkn2a_status) <- "CNA_Level"
+cdkn2a_df <- data.frame(SAMPLE_ID = rownames(cdkn2a_status), 
+                        Group = ifelse(cdkn2a_status[,1] == -2, "CDKN2A_HomDel", "Others"))
+
+# 2. 合并临床生存数据
+# 注意：需要把 SAMPLE_ID 转换或匹配到 PATIENT_ID
+clin_sub <- clin_sample_sub[, .(SAMPLE_ID, PATIENT_ID)]
+surv_data_merged <- merge(cdkn2a_df, clin_sub, by = "SAMPLE_ID")
+surv_final <- merge(surv_data_merged, clin_patient_sub, by = "PATIENT_ID")
+
+# 3. 准备生存变量
+surv_final$OS_STATUS_NUM <- ifelse(grepl("DECEASED", surv_final$OS_STATUS, ignore.case = TRUE), 1, 0)
+surv_final$OS_MONTHS <- as.numeric(surv_final$OS_MONTHS)
+
+# 4. 运行生存曲线
+library(survival)
+library(survminer)
+
+fit <- survfit(Surv(OS_MONTHS, OS_STATUS_NUM) ~ Group, data = surv_final)
+
+# 5. 绘图
+ggsurvplot(fit, data = surv_final,
+           pval = TRUE,             # 显示 P 值
+           conf.int = TRUE,         # 显示置信区间
+           risk.table = TRUE,       # 显示风险表
+           title = "Survival Impact of CDKN2A Deep Deletion in NSCLC",
+           legend.labs = c("CDKN2A Deep Deletion", "Others/WT"),
+           palette = c("#053061", "#D1D1D1"))
+```
+```{r}
+# 严格执行 PPT 规划：识别 Top 50 高频变异基因
+
+# 1. 提取突变最频繁的 Top 50
+top_mutations_50 <- muta_sub[, .N, by = Hugo_Symbol][order(-N)][1:50, Hugo_Symbol]
+
+# 2. 提取 CNA 变异（增益或缺失）最频繁的 Top 50
+cna_freq_all <- rowSums(cna_sub[, -1, with=FALSE] != 0, na.rm = TRUE) / ncol(cna_sub[,-1])
+cna_freq_df <- data.frame(Hugo_Symbol = cna_sub$Hugo_Symbol, Freq = cna_freq_all)
+top_cna_50 <- cna_freq_df[order(-cna_freq_df$Freq), ][1:50, "Hugo_Symbol"]
+
+# 3. 合并并去重，得到最终进入 Lasso 的候选池
+candidate_genes_50 <- unique(c(top_mutations_50, top_cna_50))
+
+cat("第一步完成：根据 PPT 逻辑，已筛选出", length(candidate_genes_50), "个基因进入候选池。\n")
+```
+```{r}
+# Step 2: Binary Transformation & Final Matrix Assembly
+
+# 1. 提取生存和临床基础数据 (满足 PPT 中的 Clinical Data Cleaning 逻辑)
+# 剔除 OS_MONTHS 为缺失或非正值的病人
+final_clinic <- clin_patient_sub[!is.na(OS_MONTHS) & OS_MONTHS > 0, 
+                                 .(PATIENT_ID, OS_MONTHS = as.numeric(OS_MONTHS), 
+                                   OS_STATUS_NUM = ifelse(grepl("DECEASED", OS_STATUS), 1, 0),
+                                   AGE = as.numeric(CURRENT_AGE_DEID),
+                                   GENDER = ifelse(GENDER == "Female", 1, 0))]
+
+# 2. 为 93 个候选基因构建 0/1 矩阵
+# 初始化一个全为 0 的矩阵，行名为病人 ID，列名为基因名
+gene_matrix <- matrix(0, nrow = nrow(final_clinic), ncol = length(candidate_genes_50),
+                      dimnames = list(final_clinic$PATIENT_ID, candidate_genes_50))
+
+# 填充突变信息 (Muta -> 1)
+# 获取子集样本对应的病人 ID
+nsclc_muta_patients <- clin_sample_sub[SAMPLE_ID %in% muta_sub$Tumor_Sample_Barcode, .(SAMPLE_ID, PATIENT_ID)]
+muta_with_patient <- merge(muta_sub, nsclc_muta_patients, by.x = "Tumor_Sample_Barcode", by.y = "SAMPLE_ID")
+
+for(g in intersect(candidate_genes_50, unique(muta_with_patient$Hugo_Symbol))) {
+  pts_with_muta <- unique(muta_with_patient[Hugo_Symbol == g, PATIENT_ID])
+  gene_matrix[rownames(gene_matrix) %in% pts_with_muta, g] <- 1
+}
+
+# 填充 CNA 信息 (CNA != 0 -> 1)
+# 注意：CNA 数据列名通常是 SAMPLE_ID，需要映射到 PATIENT_ID
+sample_to_patient <- clin_sample_sub[, .(SAMPLE_ID, PATIENT_ID)]
+for(g in intersect(candidate_genes_50, cna_sub$Hugo_Symbol)) {
+  # 提取该基因在所有样本中的 Level
+  gene_levels <- unlist(cna_sub[Hugo_Symbol == g, -1, with=FALSE])
+  # 找到 Level != 0 的样本 ID
+  altered_samples <- names(gene_levels)[!is.na(gene_levels) & gene_levels != 0]
+  # 映射到病人 ID
+  altered_patients <- sample_to_patient[SAMPLE_ID %in% altered_samples, PATIENT_ID]
+  gene_matrix[rownames(gene_matrix) %in% altered_patients, g] <- 1
+}
+
+# 3. 合并临床与基因数据，得到最终分析数据集 (Final Analytic Dataset)
+final_analytic_df <- cbind(final_clinic, as.data.frame(gene_matrix))
+
+cat("第二步完成！\n")
+cat("最终矩阵维度:", nrow(final_analytic_df), "行 (病人) x", ncol(final_analytic_df), "列 (变量)。\n")
+```
+```{r}
+# # 检查每一列有多少个缺失值
+# na_counts <- colSums(is.na(final_analytic_df))
+# print(na_counts[na_counts > 0])
+
+# Step 3: Lasso-Cox Modeling & Feature Selection
+# 1. 剔除那 1 个年龄缺失的病人 (方案 A)
+final_analytic_df_clean <- na.omit(final_analytic_df)
+
+cat("清理完成：剔除了 1 个缺失年龄的样本，剩余样本量：", nrow(final_analytic_df_clean), "\n")
+
+# 2. 重新准备 Lasso 矩阵
+# X 包含年龄、性别和所有 93 个基因变量
+x_vars <- as.matrix(final_analytic_df_clean[, -c(1:3)]) 
+y_outcome <- Surv(final_analytic_df_clean$OS_MONTHS, final_analytic_df_clean$OS_STATUS_NUM)
+
+# 3. 再次运行带交叉验证的 Lasso-Cox
+library(glmnet)
+set.seed(629) # 保持随机种子一致
+cv_lasso <- cv.glmnet(x_vars, y_outcome, family = "cox", alpha = 1, nfolds = 10)
+
+# 4. 绘制结果图
+plot(cv_lasso)
+
+# 5. 查看筛选出的特征
+best_lambda <- cv_lasso$lambda.min
+lasso_coefs <- coef(cv_lasso, s = "lambda.min")
+selected_features <- row.names(lasso_coefs)[as.numeric(lasso_coefs) != 0]
+
+cat("Lasso 筛选出的最终特征数量：", length(selected_features), "\n")
+print(selected_features)
+```
+```{r}
+#Step 4: Final Model Building & Comparison
+
+# 1. 构建基础临床模型 (Baseline Clinical Model)
+model_clinical <- coxph(Surv(OS_MONTHS, OS_STATUS_NUM) ~ AGE + GENDER, 
+                        data = final_analytic_df_clean)
+
+# 2. 构建整合模型 (Clinicogenomic Model)
+# 自动生成公式：使用 Lasso 选出的 48 个特征
+# 使用 backticks 包裹每一个特征名称，防止连字符被解析为减法
+formula_full <- as.formula(paste("Surv(OS_MONTHS, OS_STATUS_NUM) ~", 
+                                 paste(paste0("`", selected_features, "`"), collapse = " + ")))
+
+# 然后重新运行模型
+model_full <- coxph(formula_full, data = final_analytic_df_clean)
+
+# 3. 计算 C-index (预测准确度) 进行对比
+c_index_clinical <- summary(model_clinical)$concordance[1]
+c_index_full <- summary(model_full)$concordance[1]
+
+# 4. 进行似然比检验 (Likelihood Ratio Test) 验证显著性
+lrt_test <- anova(model_clinical, model_full)
+
+cat("基础模型 C-index:", round(c_index_clinical, 3), "\n")
+cat("整合模型 C-index:", round(c_index_full, 3), "\n")
+print(lrt_test)
+```
+```{r}
+# 检查 PH 假设
+ph_test <- cox.zph(model_full)
+print(ph_test)
+plot(ph_test) # 如果曲线基本平直，则假设成立
+```
+
+```{r}
+
+library(ComplexHeatmap)
+
+# 1. 选取 Top 10 基因
+top_10_genes <- candidate_genes_50[1:10]
+
+# 2. 选取变异最活跃的前 100 个样本
+sample_activity <- rowSums(gene_matrix)
+top_100_samples <- names(sort(sample_activity, decreasing = TRUE))[1:100]
+
+# 3. 准备绘图矩阵
+heatmap_mat <- t(gene_matrix[top_100_samples, top_10_genes])
+
+# 4. 绘图 (修复了 Legend 错误)
+Heatmap(heatmap_mat, 
+        name = "Status", 
+        col = c("0" = "#F7F7F7", "1" = "#B2182B"), 
+        column_title = "NSCLC: Mutation Landscape (Top 100 Samples)",
+        row_title = "Top 10 Genomic Drivers",
+        show_column_names = FALSE, 
+        cluster_rows = TRUE, 
+        cluster_columns = TRUE,
+        rect_gp = gpar(col = "white", lwd = 0.5),
+        # 核心修复部分：明确指定 at 和 labels 的对应关系
+        heatmap_legend_param = list(
+          at = c(0, 1), 
+          labels = c("Wild-type", "Altered")
+        ))
+```
+```{r}
+# 1. 共突变分析 (Co-mutation Analysis)
+library(corrplot)
+
+# 核心修复：只选取那些确实存在于 gene_matrix 列名中的 Lasso 特征
+# 这样可以避免“下标出界”错误
+valid_genes <- selected_features[selected_features %in% colnames(gene_matrix)]
+
+# 如果有效基因太少，则补齐前 20 个变异最频繁的基因
+if(length(valid_genes) < 5) {
+  valid_genes <- colnames(gene_matrix)[1:20]
+} else {
+  valid_genes <- valid_genes[1:min(20, length(valid_genes))]
+}
+
+# 提取子矩阵
+mat_sub <- gene_matrix[, valid_genes]
+
+# 初始化 or_matrix (优势比矩阵)
+n_genes <- length(valid_genes)
+or_matrix <- matrix(0, nrow = n_genes, ncol = n_genes, 
+                    dimnames = list(valid_genes, valid_genes))
+
+# 循环计算 Log2 Odds Ratio
+for (i in 1:n_genes) {
+  for (j in 1:n_genes) {
+    if (i == j) {
+      or_matrix[i, j] <- 0 
+    } else {
+      # 创建 2x2 联列表，确保因子水平正确
+      tab <- table(factor(mat_sub[, i], levels = c(0, 1)), 
+                   factor(mat_sub[, j], levels = c(0, 1)))
+      
+      # 加上 0.5 修正防止除以 0
+      a <- tab[2, 2]; b <- tab[2, 1]; c <- tab[1, 2]; d <- tab[1, 1]
+      odds_ratio <- ((a + 0.5) * (d + 0.5)) / ((b + 0.5) * (c + 0.5))
+      or_matrix[i, j] <- log2(odds_ratio)
+    }
+  }
+}
+
+# 绘图
+diag(or_matrix) <- NA 
+limit_val <- max(abs(range(or_matrix, na.rm = TRUE)))
+
+corrplot(or_matrix, 
+         method = "color", type = "upper", is.corr = FALSE,
+         col.lim = c(-limit_val, limit_val), 
+         tl.col = "black", tl.srt = 45, addCoef.col = "black",
+         number.cex = 0.6, na.label = " ",
+         col = colorRampPalette(c("#2166AC", "#F7F7F7", "#B2182B"))(200),
+         title = "Co-mutation Analysis (Log2 Odds Ratio)",
+         mar = c(0,0,2,0))
+```
+```{r}
+# 1. 模型进阶：随机生存森林 (RSF) 
+
+library(ranger)
+library(survival)
+
+# --- 核心修复：确保数据维度和列名 ---
+
+# 1. 检查有效基因是否存在，如果不存在则报错提醒，防止后续崩溃
+if (length(valid_genes) == 0) {
+  stop("错误：没有找到有效的基因特征，请检查 valid_genes 是否生成成功。")
+}
+
+# 2. 提取数据（明确指定 drop = FALSE 防止降维）
+target_cols <- c("OS_MONTHS", "OS_STATUS_NUM", valid_genes)
+# 确保只提取存在的列
+target_cols <- target_cols[target_cols %in% colnames(final_analytic_df_clean)]
+
+rsf_data_raw <- final_analytic_df_clean[, ..target_cols] # 使用 data.table 的写法确保稳定
+
+# 3. 强制转换列名（处理特殊字符）
+# 先检查维度，确保 rsf_data_raw 是个矩阵或数据框
+if (ncol(rsf_data_raw) >= 2) {
+    setnames(rsf_data_raw, make.names(colnames(rsf_data_raw)))
+} else {
+    stop("数据提取失败：rsf_data_raw 的列数不足。")
+}
+
+# 4. 清理缺失值并转换回 data.frame (ranger 对 data.frame 兼容性最高)
+rsf_data_final <- as.data.frame(na.omit(rsf_data_raw))
+
+# --- 运行模型 ---
+# 自动生成公式
+final_cols <- colnames(rsf_data_final)
+feature_cols <- final_cols[!final_cols %in% c("OS_MONTHS", "OS_STATUS_NUM")]
+rsf_formula <- as.formula(paste("Surv(OS_MONTHS, OS_STATUS_NUM) ~", 
+                                paste(feature_cols, collapse = " + ")))
+
+rsf_nsclc <- ranger(
+  formula = rsf_formula,
+  data = rsf_data_final,
+  num.trees = 500,
+  importance = "permutation",
+  seed = 629
+)
+
+# --- 输出对比 ---
+c_index_rsf <- 1 - rsf_nsclc$prediction.error
+
+cat("\n==========================================\n")
+cat("       Interim Project 模型性能报告       \n")
+cat("==========================================\n")
+cat("A. 基础临床模型 C-index: 0.572\n") 
+cat("B. Lasso-Cox 整合模型 C-index: 0.644\n") 
+cat("C. 随机生存森林(RSF) C-index:", round(c_index_rsf, 3), "\n")
+cat("==========================================\n")
+```
+
+
+```{r}
+# 整合变异数据与临床样本信息 (LUAD vs LUSC)
+muta_with_patient <- merge(
+    muta,
+    clin_sample[, .(SAMPLE_ID, PATIENT_ID, CANCER_TYPE)],
+    by.x = "Tumor_Sample_Barcode",
+    by.y = "SAMPLE_ID",
+    all.x = TRUE
+)
+
+# 计算每个癌症类型中，每个基因出现的频次
+forplot <- muta_with_patient[, .N, by = .(Hugo_Symbol, CANCER_TYPE)]
+
+# 可视化：不同亚型的变异负荷对比
+library(ggplot2)
+ggplot(forplot, aes(x = CANCER_TYPE, y = N)) +
+    geom_boxplot(outlier.shape = NA) +
+    geom_jitter(width = 0.2, alpha = 0.3, color = "#B2182B") +
+    coord_flip() +
+    theme_minimal() +
+    labs(title = "Mutation Counts by Cancer Type", x = "Cancer Subtype", y = "Number of Mutations")
+```
+```{r}
+#提取并绘制随机森林的变量重要性
+library(ggplot2)
+
+# 1. 提取重要性数据
+importance_df <- data.frame(
+  Gene = names(rsf_nsclc$variable.importance),
+  Importance = rsf_nsclc$variable.importance
+)
+
+# 2. 选取前 15 个最重要的基因进行展示
+importance_df <- importance_df[order(-importance_df$Importance), ][1:15, ]
+
+# 3. 绘图
+ggplot(importance_df, aes(x = reorder(Gene, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "#B2182B") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Top 15 Most Important Features (RSF)",
+       subtitle = "Genes with highest impact on survival prediction",
+       x = "Gene Symbol", y = "Permutation Importance")
+```
+```{r}
+# 修复版：提取 1年生存概率进行可视化
+# 1. 提取预测对象
+rsf_pred_obj <- predict(rsf_nsclc, data = rsf_data_final)
+
+# 2. 找到最接近 365 天（1年）的时间索引
+time_idx <- which.min(abs(rsf_pred_obj$unique.death.times - 365))
+
+# 3. 提取 1年生存率 (Prob)
+# 注意：生存率越高，风险越低
+rsf_risk_fix <- data.frame(
+  SurvProb_1yr = rsf_pred_obj$survival[, time_idx],
+  Status = factor(rsf_data_final$OS_STATUS_NUM, labels = c("Alive", "Deceased"))
+)
+
+# 4. 绘图：展示生存概率的分布差异
+ggplot(rsf_risk_fix, aes(x = Status, y = SurvProb_1yr, fill = Status)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.6) + 
+  geom_jitter(width = 0.2, alpha = 0.2, size = 0.8) + # 调低散点透明度
+  scale_fill_manual(values = c("Alive" = "#2166AC", "Deceased" = "#B2182B")) +
+  theme_minimal() +
+  labs(title = "Model Discrimination: Predicted 1-Year Survival",
+       subtitle = "Deceased patients should have lower predicted survival probabilities",
+       x = "Actual Survival Status", 
+       y = "Predicted Survival Probability (at 1 Year)")
+```
+
+```{r}
+# 3: EGFR 突变在不同亚型中的分布
+# 假设你的 muta_with_patient 已经生成
+egfr_dist <- muta_with_patient[Hugo_Symbol == "EGFR", .N, by = CANCER_TYPE]
+
+ggplot(muta_with_patient[Hugo_Symbol %in% c("EGFR", "KRAS", "TP53")], 
+       aes(x = CANCER_TYPE, fill = Hugo_Symbol)) +
+  geom_bar(position = "fill") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Driver Mutation Distribution by Cancer Subtype",
+       y = "Proportion of Mutations", x = "")
+```
+```{r}
+# 3. CNA Profile Comparison
+library(ggplot2)
+library(data.table)
+
+# 1. 准备数据：提取 CNA 矩阵（去掉 Hugo_Symbol 列进行计算）
+cna_data <- as.matrix(cna[, -1, with=FALSE])
+rownames(cna_data) <- cna$Hugo_Symbol
+
+# 2. 自动选取变异最活跃的 2 个样本（或者你手动指定 IDs）
+# 这里我们选变异频率（绝对值之和）最高的两个样本
+sample_activity <- colSums(abs(cna_data), na.rm = TRUE)
+target_samples <- names(sort(sample_activity, decreasing = TRUE)[1:2])
+
+# 3. 自动选取变异最显著的前 15 个基因
+gene_activity <- rowSums(abs(cna_data[, target_samples]), na.rm = TRUE)
+target_genes <- names(sort(gene_activity, decreasing = TRUE)[1:15])
+
+# 4. 提取并转换数据格式（从 Wide 到 Long）
+cna_sub_mat <- cna_data[target_genes, target_samples, drop = FALSE]
+df_cna <- as.data.frame(cna_sub_mat)
+df_cna$Gene <- rownames(df_cna)
+
+df_long <- melt(as.data.table(df_cna), id.vars = "Gene", 
+                variable.name = "Sample", value.name = "CNA_Level")
+
+# 5. 定义 CNA 状态标签
+df_long[, Status := factor(CNA_Level, 
+                           levels = c(-2, -1, 0, 1, 2),
+                           labels = c("Deep Deletion", "Loss", "Neutral", "Gain", "Amplification"))]
+
+# 6. 绘图
+ggplot(df_long, aes(x = reorder(Gene, -abs(CNA_Level)), y = CNA_Level, fill = Status)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~Sample, ncol = 1) + # 分成上下两个面板对比
+  scale_fill_manual(values = c("Deep Deletion" = "#053061", 
+                               "Loss" = "#2166AC", 
+                               "Neutral" = "#F7F7F7", 
+                               "Gain" = "#D6604D", 
+                               "Amplification" = "#B2182B")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.minor = element_blank()) +
+  labs(title = "CNA Profile Comparison: Genomic Heterogeneity",
+       subtitle = paste("Comparing copy number patterns of", target_samples[1], "and", target_samples[2]),
+       x = "Gene Symbol", y = "Copy Number Level (-2 to +2)")
+```
+```{r}
+# 3. CNA Profile Comparison
+library(ggplot2)
+library(data.table)
+
+# 1. 准备数据：提取 CNA 矩阵（去掉 Hugo_Symbol 列进行计算）
+cna_data <- as.matrix(cna[, -1, with=FALSE])
+rownames(cna_data) <- cna$Hugo_Symbol
+
+# 2. （或者你手动指定 IDs）
+# 选取缺失最多的样本
+sample_del <- names(which.min(colSums(cna_data, na.rm = TRUE)))
+# 选取扩增最多的样本
+sample_amp <- names(which.max(colSums(cna_data, na.rm = TRUE)))
+target_samples <- c(sample_del, sample_amp)
+
+# 3. 自动选取变异最显著的前 15 个基因
+gene_activity <- rowSums(abs(cna_data[, target_samples]), na.rm = TRUE)
+target_genes <- names(sort(gene_activity, decreasing = TRUE)[1:15])
+
+# 4. 提取并转换数据格式（从 Wide 到 Long）
+cna_sub_mat <- cna_data[target_genes, target_samples, drop = FALSE]
+df_cna <- as.data.frame(cna_sub_mat)
+df_cna$Gene <- rownames(df_cna)
+
+df_long <- melt(as.data.table(df_cna), id.vars = "Gene", 
+                variable.name = "Sample", value.name = "CNA_Level")
+
+# 5. 定义 CNA 状态标签
+df_long[, Status := factor(CNA_Level, 
+                           levels = c(-2, -1, 0, 1, 2),
+                           labels = c("Deep Deletion", "Loss", "Neutral", "Gain", "Amplification"))]
+
+# 6. 绘图
+ggplot(df_long, aes(x = reorder(Gene, -abs(CNA_Level)), y = CNA_Level, fill = Status)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~Sample, ncol = 1) + # 分成上下两个面板对比
+  scale_fill_manual(values = c("Deep Deletion" = "#053061", 
+                               "Loss" = "#2166AC", 
+                               "Neutral" = "#F7F7F7", 
+                               "Gain" = "#D6604D", 
+                               "Amplification" = "#B2182B")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.minor = element_blank()) +
+  labs(title = "CNA Profile Comparison: Genomic Heterogeneity",
+       subtitle = paste("Comparing copy number patterns of", target_samples[1], "and", target_samples[2]),
+       x = "Gene Symbol", y = "Copy Number Level (-2 to +2)")
+```
+#Final Project
+```{r}
+# 新项目延展：免疫治疗反应预测 (Immunotherapy Response Prediction)
+# 核心指标：TMB 计算 与 STK11/KEAP1 变异状态整合
+
+# 1. 计算肿瘤突变负荷 (TMB)
+# TMB 定义：非同步体细胞突变总数 / 测序覆盖区域大小 (假设覆盖大小为 38Mb，即全外显子组 WES 的常用标准)
+seq_size_mb <- 38 
+
+# 统计每个样本的突变总数
+tmb_counts <- muta_sub[, .(Mut_Count = .N), by = Tumor_Sample_Barcode]
+tmb_counts[, TMB_Score := Mut_Count / seq_size_mb]
+
+# 2. 提取 STK11 和 KEAP1 的变异状态 (突变 + CNA)
+# 我们定义 "Altered" 为：存在非同步突变 OR 存在深删(HomDel, -2)
+target_immuno_genes <- c("STK11", "KEAP1")
+
+# (A) 从突变数据提取
+muta_immuno <- muta_sub[Hugo_Symbol %in% target_immuno_genes, 
+                        .(Has_Mutation = 1), 
+                        by = .(Tumor_Sample_Barcode, Hugo_Symbol)]
+
+# (B) 从 CNA 数据提取 (深删状态)
+cna_immuno <- cna_sub[Hugo_Symbol %in% target_immuno_genes]
+cna_immuno_melted <- melt(cna_immuno, id.vars = "Hugo_Symbol", 
+                          variable.name = "Tumor_Sample_Barcode", value.name = "CNA_Level")
+cna_immuno_homdel <- cna_immuno_melted[CNA_Level == -2, .(Has_HomDel = 1), 
+                                       by = .(Tumor_Sample_Barcode, Hugo_Symbol)]
+
+# (C) 合并为基因状态矩阵
+immuno_status_raw <- merge(muta_immuno, cna_immuno_homdel, 
+                           by = c("Tumor_Sample_Barcode", "Hugo_Symbol"), all = TRUE)
+immuno_status_raw[is.na(Has_Mutation), Has_Mutation := 0]
+immuno_status_raw[is.na(Has_HomDel), Has_HomDel := 0]
+immuno_status_raw[, Is_Altered := ifelse(Has_Mutation == 1 | Has_HomDel == 1, 1, 0)]
+
+# 转为宽格式：每个样本一行，列为 STK11 和 KEAP1 的状态
+immuno_gene_matrix <- dcast(immuno_status_raw, Tumor_Sample_Barcode ~ Hugo_Symbol, 
+                            value.var = "Is_Altered", fill = 0)
+
+# 3. 整合 TMB 与基因状态 (Final Immuno-Analytic Dataset)
+immuno_df <- merge(tmb_counts[, .(Tumor_Sample_Barcode, TMB_Score)], 
+                   immuno_gene_matrix, 
+                   by = "Tumor_Sample_Barcode", all.x = TRUE)
+
+# 处理缺失值：如果在变异表中没查到，则视为 Wild-type (0)
+immuno_df[is.na(STK11), STK11 := 0]
+immuno_df[is.na(KEAP1), KEAP1 := 0]
+
+# 4. 定义联合分组 (Stratification Plan)
+# 高 TMB 定义为样本的前 20% (或使用常用阈值 10)
+tmb_cutoff <- quantile(immuno_df$TMB_Score, 0.8)
+immuno_df[, TMB_Group := ifelse(TMB_Score >= tmb_cutoff, "High TMB", "Low TMB")]
+
+# 定义 STK11/KEAP1 联合状态
+immuno_df[, Gene_Status := "Wild-type"]
+immuno_df[STK11 == 1 | KEAP1 == 1, Gene_Status := "STK11/KEAP1 Altered"]
+
+# 5. 可视化：TMB 与基因状态的关系
+library(ggplot2)
+ggplot(immuno_df, aes(x = Gene_Status, y = log2(TMB_Score + 1), fill = Gene_Status)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+    geom_jitter(width = 0.2, alpha = 0.2, size = 0.5) +
+    scale_fill_manual(values = c("Wild-type" = "#2166AC", "STK11/KEAP1 Altered" = "#B2182B")) +
+    theme_minimal() +
+    labs(title = "TMB Distribution by STK11/KEAP1 Status",
+         subtitle = paste("NSCLC samples from MSK-CHORD (N =", nrow(immuno_df), ")"),
+         x = "Genomic Status", y = "log2(TMB Score + 1)")
+
+# 6. 生存分析 (Survival Stratification)
+# 合并生存数据 (利用你之前的 clin_sample_sub 和 clin_patient_sub)
+surv_base <- merge(clin_sample_sub[, .(SAMPLE_ID, PATIENT_ID)], 
+                   clin_patient_sub[, .(PATIENT_ID, OS_MONTHS, OS_STATUS)], 
+                   by = "PATIENT_ID")
+
+surv_immuno <- merge(immuno_df, surv_base, by.x = "Tumor_Sample_Barcode", by.y = "SAMPLE_ID")
+
+# 准备生存变量并绘图
+library(survival)
+library(survminer)
+surv_immuno[, OS_STATUS_NUM := ifelse(grepl("DECEASED", OS_STATUS, ignore.case = TRUE), 1, 0)]
+surv_immuno[, OS_MONTHS := as.numeric(OS_MONTHS)]
+
+# 按 TMB 组和基因状态组进行复合分层
+surv_immuno[, Combined_Group := paste(TMB_Group, "|", Gene_Status)]
+fit_immuno <- survfit(Surv(OS_MONTHS, OS_STATUS_NUM) ~ Combined_Group, data = surv_immuno)
+
+ggsurvplot(fit_immuno, data = surv_immuno,
+           pval = TRUE, conf.int = FALSE,
+           title = "Survival by TMB and STK11/KEAP1 Status",
+           legend.title = "Risk Groups",
+           palette = "jco")
+```
+
+```{r}
+# 1. 提取正确的临床协变量
+# 我们把 CURRENT_AGE_DEID 提取出来并重命名为 AGE，方便后续分析
+clin_fix <- clin_patient[, .(PATIENT_ID, 
+                             AGE = as.numeric(CURRENT_AGE_DEID), 
+                             GENDER_FIX = GENDER)]
+
+# 2. 合并到现有的分析表中
+# all.x = TRUE 确保不会丢失你之前算好的 TMB 和基因状态
+surv_immuno <- merge(surv_immuno, clin_fix, by = "PATIENT_ID", all.x = TRUE)
+
+# 3. 处理性别列（防止列名冲突）
+surv_immuno[, GENDER := GENDER_FIX]
+
+# 4. 运行 Cox 模型
+library(survival)
+library(survminer)
+
+# 确保因子水平以 Wild-type 为基准
+surv_immuno$Gene_Status <- factor(surv_immuno$Gene_Status)
+if("Wild-type" %in% levels(surv_immuno$Gene_Status)) {
+  surv_immuno$Gene_Status <- relevel(surv_immuno$Gene_Status, ref = "Wild-type")
+}
+
+# 使用修正后的变量名运行模型
+cox_immuno <- coxph(Surv(OS_MONTHS, OS_STATUS_NUM) ~ TMB_Group + STK11 + KEAP1 + AGE + GENDER, 
+                    data = surv_immuno)
+
+# 5. 输出结果与森林图
+print(summary(cox_immuno))
+
+ggforest(cox_immuno, data = surv_immuno, 
+         main = "Hazard Ratio: Impact of TMB and STK11/KEAP1 Mutations")
+```
+
+```{r}
+# 2. 交互作用探测：STK11 与 KEAP1 的协同效应
+
+# 统计四种组合的样本量
+table(surv_immuno$STK11, surv_immuno$KEAP1)
+
+# 构建带交互项的模型
+cox_interaction <- coxph(Surv(OS_MONTHS, OS_STATUS_NUM) ~ STK11 * KEAP1 + TMB_Score, 
+                         data = surv_immuno)
+
+# 提取交互项 P 值：如果 P < 0.05，说明两者具有生物学协同预测价值
+interaction_p <- summary(cox_interaction)$coefficients["STK11:KEAP1", "Pr(>|z|)"]
+cat("STK11 与 KEAP1 的协同效应 P 值:", interaction_p, "\n")
+```
+
+```{r}
+# 3. 构建整合免疫预测得分 (Immuno-Score)
+
+# 简单的线性加权得分：TMB 贡献正向分，耐药基因突变贡献负向分
+# 这里利用 Cox 模型的系数作为权重
+weights <- coef(cox_immuno)
+
+surv_immuno[, Immuno_Score := (weights["TMB_GroupHigh TMB"] * (TMB_Group == "High TMB")) +
+                               (weights["STK11"] * STK11) + 
+                               (weights["KEAP1"] * KEAP1)]
+
+# 绘制得分分布：对比死亡组与生存组
+ggplot(surv_immuno, aes(x = OS_STATUS, y = Immuno_Score, fill = OS_STATUS)) +
+    geom_violin(alpha = 0.5) +
+    geom_boxplot(width = 0.1) +
+    theme_minimal() +
+    labs(title = "Composite Immuno-Score Distribution",
+         subtitle = "Higher score indicates higher predicted risk based on TMB and Mutations")
+```
+```{r}
+# 1. 基因变异共现性可视化 (Co-occurrence)
+library(grid)
+library(futile.logger)
+library(VennDiagram)
+
+# 提取突变样本名单
+stk11_samples <- surv_immuno[STK11 == 1, PATIENT_ID]
+keap1_samples <- surv_immuno[KEAP1 == 1, PATIENT_ID]
+
+# 绘制 Venn 图
+grid.newpage()
+venn_plot <- draw.pairwise.venn(
+  area1 = length(stk11_samples),
+  area2 = length(keap1_samples),
+  cross.area = nrow(surv_immuno[STK11 == 1 & KEAP1 == 1]),
+  category = c("STK11 Mut", "KEAP1 Mut"),
+  fill = c("#E41A1C", "#377EB8"),
+  alpha = 0.6,
+  cat.pos = c(-20, 20),
+  cat.dist = 0.05
+)
+# 这一步会直接在 Plots 窗口生成图，你可以截图放入 PPT 第 4 页
+```
+
+```{r}
+# 热图：整合 TMB 与基因状态
+library(dplyr)
+library(ggplot2)
+
+# 计算统计指标
+heatmap_data <- surv_immuno %>%
+  group_by(TMB_Group, Gene_Status) %>%
+  summarise(
+    Death_Rate = mean(OS_STATUS_NUM, na.rm = TRUE),
+    Median_OS = median(OS_MONTHS, na.rm = TRUE),
+    Count = n(),
+    .groups = 'drop' # 释放分组
+  )
+
+# 绘制热图
+ggplot(heatmap_data, aes(x = TMB_Group, y = Gene_Status, fill = Death_Rate)) +
+  geom_tile(color = "white", size = 1) +
+  geom_text(aes(label = paste0("N=", Count, "\nRate=", round(Death_Rate, 2))), 
+            color = "white", fontface = "bold") +
+  scale_fill_gradient(low = "#2166AC", high = "#B2182B", name = "Death Rate") +
+  theme_minimal() +
+  labs(title = "Clinical Risk Landscape: TMB vs Genomic Status",
+       subtitle = "Darker red indicates higher mortality rate",
+       x = "TMB Level", y = "Mutation Profile")
+```
+
+```{r}
+# 3. 伴随突变分析：STK11 突变者还常伴随哪些基因？
+
+# 找出 STK11 突变组中最频繁的前 10 个突变基因 (排除 STK11 自己)
+stk11_mutant_ids <- surv_immuno[STK11 == 1, Tumor_Sample_Barcode]
+top_co_mutations <- muta_sub[Tumor_Sample_Barcode %in% stk11_mutant_ids & Hugo_Symbol != "STK11", 
+                             .(Freq = .N), by = Hugo_Symbol][order(-Freq)][1:10]
+
+# 绘制条形图
+ggplot(top_co_mutations, aes(x = reorder(Hugo_Symbol, Freq), y = Freq, fill = Freq)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_viridis_c(option = "magma") +
+  labs(title = "Top Co-occurring Mutations in STK11-Mutant Samples",
+       x = "Gene Symbol", y = "Number of Samples")
+```
+```{r}
+# 修复 Immuno_Score 并重新运行分析
+library(timeROC)
+
+# 1. 确保 STK11 和 KEAP1 是数值型（0 或 1）
+surv_immuno[, STK11 := as.numeric(STK11)]
+surv_immuno[, KEAP1 := as.numeric(KEAP1)]
+# 统一 TMB 分组：High=1, Low=0
+surv_immuno[, TMB_Binary := ifelse(TMB_Group == "High TMB", 1, 0)]
+
+# 2. 重新计算 Immuno_Score
+# 我们直接使用 Cox 模型生成的系数来加权。如果系数提取失败，我们使用经验系数：
+# TMB 是保护因素(负风险)，STK11/KEAP1 是危险因素(正风险)
+# 这里重新跑一次简洁版 Cox 确保拿到 weights
+tmp_cox <- coxph(Surv(OS_MONTHS, OS_STATUS_NUM) ~ TMB_Binary + STK11 + KEAP1, data = surv_immuno)
+w <- coef(tmp_cox)
+
+# 计算得分 (线性预测值)
+surv_immuno[, Immuno_Score := (TMB_Binary * w["TMB_Binary"]) +
+                               (STK11 * w["STK11"]) +
+                               (KEAP1 * w["KEAP1"])]
+
+# 3. 再次检查是否还有缺失值
+cat("修复后 Immuno_Score 缺失数:", sum(is.na(surv_immuno$Immuno_Score)), "\n")
+
+# 1. 运行 timeROC，将 iid 设为 FALSE
+ROC_res <- timeROC(T = surv_immuno$OS_MONTHS,
+                   delta = surv_immuno$OS_STATUS_NUM,
+                   marker = surv_immuno$Immuno_Score,
+                   cause = 1, weighting = "marginal",
+                   times = c(12, 24, 36),
+                   iid = FALSE)
+
+# 2. 绘图（现在应该瞬间就出来了）
+plot(ROC_res, time = 24, col = "#B2182B", lwd = 3, title = FALSE)
+abline(a=0, b=1, lty=2, col="grey")
+legend("bottomright",
+       legend = paste("24-month AUC =", round(ROC_res$AUC[2], 2)),
+       col = "#B2182B", lwd = 3, bty = "n")
+title("Integrated Model: 2-Year Survival Prediction")
+```
+```{r}
+# 分组 TMB 比较：单突变 vs 双突变
+surv_immuno[, Detail_Group := "Wild-type"]
+surv_immuno[STK11 == 1 & KEAP1 == 0, Detail_Group := "STK11 Only"]
+surv_immuno[STK11 == 0 & KEAP1 == 1, Detail_Group := "KEAP1 Only"]
+surv_immuno[STK11 == 1 & KEAP1 == 1, Detail_Group := "Double Mut"]
+
+ggplot(surv_immuno, aes(x = reorder(Detail_Group, TMB_Score, median), y = log2(TMB_Score + 1), fill = Detail_Group)) +
+  geom_violin(alpha = 0.6) +
+  geom_boxplot(width = 0.1, color = "black", outlier.shape = NA) +
+  theme_minimal() +
+  labs(title = "TMB Signature by Mutation Combination",
+       x = "Mutational Pattern", y = "log2(TMB Score + 1)") +
+  scale_fill_brewer(palette = "Set1")
+```
+
+```{r}
+# 最终优化：解决生存曲线 Risk Table 变形与清晰度
+library(survminer)
+library(ggplot2)
+
+# 1. 确保标签简短且统一
+surv_immuno[, Plot_Group := paste0(
+  ifelse(TMB_Group == "High TMB", "H-TMB", "L-TMB"), " | ", 
+  ifelse(STK11 + KEAP1 > 0, "Mut", "WT")
+)]
+
+# 2. 拟合模型
+fit_plot <- survfit(Surv(OS_MONTHS, OS_STATUS_NUM) ~ Plot_Group, data = surv_immuno)
+
+# 3. 高清绘图设置
+p <- ggsurvplot(fit_plot, data = surv_immuno,
+           pval = TRUE,
+           pval.coord = c(0, 0.1),       # 调整P值位置，防止被曲线遮挡
+           palette = "jco",
+           risk.table = TRUE,
+           
+           # --- 布局核心修正 ---
+           risk.table.height = 0.30,      # 表格占整个图的高度比例
+           risk.table.y.text = TRUE,      # 显示左侧分组标签
+           risk.table.y.text.col = FALSE, # 统一使用黑色标签，增加可读性
+           
+           # --- 字体与样式修正 ---
+           tables.theme = theme_cleantable(), # 使用最清洁的主题
+           # 重点：通过 element_text 调整左侧标签的字体大小和位置
+           tables.y.text = element_text(size = 9, face = "bold", color = "black"), 
+           
+           # 调整主图样式
+           ggtheme = theme_light() + 
+                     theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+                           axis.title = element_text(size = 12),
+                           legend.text = element_text(size = 10),
+                           # 重点：给整个绘图区域留白，特别是左边(L)
+                           plot.margin = margin(t=10, r=20, b=10, l=40, unit="pt")), 
+           
+           # 其他元数据
+           legend.labs = c("H-TMB | Mut", "H-TMB | WT", "L-TMB | Mut", "L-TMB | WT"),
+           title = "NSCLC Survival: TMB & STK11/KEAP1 Status",
+           xlab = "Time (Months)",
+           ylab = "Overall Survival Probability",
+           break.time.by = 20           # 每20个月一个刻度，减少横轴拥挤
+)
+
+# 4. 关键：修正 Risk Table 内部标签的垂直间距，防止重叠
+# 有时 ggsurvplot 会默认拉伸表格文字，通过修改 ggplot 对象解决
+p$table <- p$table + theme(axis.text.y = element_text(size = 9))
+
+# 打印
+print(p)
+
+# 5. 保存为高清 PDF 或 PNG (建议放入 LaTeX 用 PDF)
+ggsave("Survival_Final_Optimized.pdf", plot = p$plot, width = 8, height = 7)
+```
+
+```{r}
+# 海报展示：多组学景观矩阵 (Visualizing Top Samples)
+library(tidyr)
+
+# 选出 TMB 最高的 100 个样本做代表展示
+poster_samples <- surv_immuno %>%
+  arrange(desc(TMB_Score)) %>%
+  head(100) %>%
+  select(Tumor_Sample_Barcode, STK11, KEAP1, TMB_Group, OS_STATUS)
+
+# 转换格式
+poster_long <- pivot_longer(poster_samples, cols = c(STK11, KEAP1), names_to = "Gene", values_to = "Mut")
+
+ggplot(poster_long, aes(x = Tumor_Sample_Barcode, y = Gene, fill = factor(Mut))) +
+  geom_tile(color = "white") +
+  scale_fill_manual(values = c("0" = "#F0F0F0", "1" = "#E41A1C"), labels = c("WT", "Mutant"), name = "Status") +
+  facet_grid(. ~ TMB_Group, scales = "free_x", space = "free") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+        panel.grid = element_blank()) +
+  labs(title = "Mutational Landscape across Top TMB Samples",
+       x = "Individual Patients (Ranked by TMB)", y = "Critical Genes")
+```
+
+```{r}
+# 进阶分析：引入 TMB 与 STK11/KEAP1 的交互项 (Interaction)
+
+# 1. 确保变量为因子格式，并设置正确的参考组
+surv_immuno$TMB_Group <- factor(surv_immuno$TMB_Group)
+if("Low TMB" %in% levels(surv_immuno$TMB_Group)) {
+  surv_immuno$TMB_Group <- relevel(surv_immuno$TMB_Group, ref = "Low TMB")
+}
+
+# 2. 构建带交互项的 Cox 模型
+# 使用 TMB_Group * STK11 表示：TMB效应 + STK11效应 + TMB与STK11的协同/拮抗效应
+cox_interaction <- coxph(Surv(OS_MONTHS, OS_STATUS_NUM) ~ 
+                           TMB_Group * STK11 + 
+                           TMB_Group * KEAP1 + 
+                           AGE + GENDER, 
+                         data = surv_immuno)
+
+# 3. 查看统计结果
+# 重点关注末尾带有 ":" 的项，如 TMB_GroupHigh TMB:STK11
+summary_res <- summary(cox_interaction)
+print(summary_res)
+
+# 4. 绘制森林图
+# 注意：包含交互项后，ggforest 的展示会变得复杂，建议增加高度
+ggforest(cox_interaction, data = surv_immuno, 
+         main = "Hazard Ratio with Interaction Effects")
+
+# 5. 【可选】计算预测值以验证“中和效应”
+# 比较在 TMB High 情况下，Mutation 带来的额外风险增量
+```
