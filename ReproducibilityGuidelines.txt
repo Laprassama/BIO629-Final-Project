@@ -1,0 +1,40 @@
+Reproducibility assessment for final project:
+
+1. Submit either an R markdown (.Rmd), R quarto (.qmd), or Jupyter notebook.
+
+2. Provide a link to the Github repository which contains this R markdown file, 
+an R quarto file, or a Jupyter notebook.
+
+3. We should be able to run the R markdown directly and generate the same output 
+as your submitted project.
+
+4. The necessary data files from MSK-CHORD should be read in directly from the 
+MSK-CHORD Github repository. For example, to read in the clinical patient data
+you can use the following code:
+clin_pat <- read.delim("https://media.githubusercontent.com/media/cBioPortal/datahub/refs/heads/master/public/msk_chord_2024/data_clinical_patient.txt",
+                       comment.char="#", stringsAsFactors = TRUE)
+
+
+4. All non-random numerical results (such as summary statistics in tables, or
+regression coefficients from a Cox proportional hazards model) should be 
+reproduced exactly when running the .Rmd file.
+
+5. Results which rely on random number generation (such as hyperparameter tuning) 
+do not need to be exactly reproduced by us (due to differences in versions of R 
+or R packages). However, you should still use set.seed at the top of your R markdown file.
+The best way to check if your report is reproducible is just to run your R markdown
+file more than once, and see if you get the same results each time.
+
+6. We will check (to some extent) the "correctness" of the R code. We won't do a
+super-detailed check of your R code, but if certain results seem strange, we will
+look at the R code to check how things are calculated.
+
+7. If your R markdown file takes more than 10 minutes to run, you should save
+necessary preliminary results as a .csv file, and then include this in your 
+Github repository.
+
+8. A reminder to try to keep the use of unnecessary R packages to a minimum. The
+use of well-known R packages is fine, but try to only use other R packages 
+(especially those with many dependencies) if they are really necessary.
+
+
