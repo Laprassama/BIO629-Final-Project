@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NSCLC Research: TMB & Genomic Drivers</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <nav>
+    <a class="nav-brand" href="#">NSCLC Precision Oncology</a>
+    <ul class="nav-links">
+      <li><a href="#about">About</a></li>
+      <li><a href="#methods">Methods</a></li>
+      <li><a href="#results">Results</a></li>
+      <li><a href="#team">Team</a></li>
+    </ul>
+  </nav>
+
+  <div class="hero">
+    <span class="tag"> MSK-CHORD 2024 · BIOSTATS 629 Project</span>
+    <h1>Quantitative Dissection of the TMB Paradox: The Role of STK11 and KEAP1</h1>
+    <p class="subtitle">
+      Why does high TMB fail in certain patients? We utilized the MSK-CHORD cohort (N=7,471) to investigate 
+      how specific genomic resistance drivers neutralize immunotherapy benefits.
+    </p>
+    <div class="hero-actions">
+      <a href="report.pdf" class="btn-primary">Read Full Report (PDF)</a>
+      <a href="https://github.com/Laprassama/BIO629-Final-Project" class="btn-outline" target="_blank">Access Code</a>
+      <a href="https://cbioportal.org" class="btn-outline" target="_blank">Access Data</a>
+    </div>
+  </div>
+
+  <main>
+
+    <section id="about">
+      <div class="container">
+        <h2>About the Project</h2>
+        <p>
+          Tumor Mutational Burden (TMB) is a primary biomarker for identifying candidates for Immune Checkpoint Inhibitors (ICI). 
+          However, clinical outcomes are often inconsistent. This project focuses on <strong>Non-Small Cell Lung Cancer (NSCLC)</strong> 
+          to resolve the "TMB Paradox" by integrating secondary genomic drivers.
+        </p>
+        <p>
+          We hypothesized that <strong>STK11</strong> and <strong>KEAP1</strong> mutations create a dominant immunosuppressive 
+          microenvironment that overrides the neoantigen load signaled by high TMB. Our research objective is to provide a 
+          multi-modal "Immuno-Score" to improve survival prediction.
+        </p>
+      </div>
+    </section>
+
+    <section id="methods">
+      <div class="container">
+        <h2>Methods & Statistical Modeling</h2>
+        <p>Our analytical pipeline combines classical biostatistics with machine learning algorithms:</p>
+        <ul>
+          <li><strong>Survival Analysis:</strong> Kaplan-Meier estimators and log-rank tests were used for univariate comparisons.</li>
+          <li><strong>Interaction Cox Model:</strong> A multivariate Cox Proportional Hazards model was constructed with explicit 
+              interaction terms (TMB × STK11 and TMB × KEAP1) to quantify biological antagonism.</li>
+          <li><strong>Machine Learning:</strong> Random Survival Forest (RSF) with 500 decision trees was employed to rank 
+              genomic features by permutation importance.</li>
+          <li><strong>Validation:</strong> Time-dependent ROC (tROC) and Brier scores were used to assess 2-year survival predictive accuracy.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="results">
+      <div class="container">
+        <h2>Key Results</h2>
+        <div class="fig-grid">
+
+          <figure>
+            <p class="fig-finding">The Paradox: Mutant tumors exhibit high TMB density but poor outcomes.</p>
+            <img src="figures/TMB Distribution by STK11KEAP1 Status.png" alt="TMB Distribution">
+            <figcaption><strong>Figure 1. TMB Signature.</strong> Comparison of TMB distribution across genomic subgroups. 
+            Note the high mutational load in resistant subgroups.</figcaption>
+          </figure>
+
+          <figure>
+            <p class="fig-finding">Survival Neutralization: Mutations override the high TMB advantage.</p>
+            <img src="figures/Impact of TMB and STK11 KEAP1 on Survival.png" alt="Survival Curves">
+            <figcaption><strong>Figure 2. KM OS Analysis.</strong> Survival divergence between TMB groups stratified by 
+            mutation status, highlighting the benefit neutralization effect.</figcaption>
+          </figure>
+
+          <figure>
+            <p class="fig-finding">Risk Quantification: STK11/KEAP1 are independent predictors of ICI failure.</p>
+            <img src="figures/Hazard Ratio Impact of TMB and STK11KEAP1 Mutations.png" alt="Forest Plot">
+            <figcaption><strong>Figure 3. Multivariate Cox Model.</strong> Adjusted Hazard Ratios for clinical and genomic 
+            covariates, confirming the synergistic risk of co-mutations.</figcaption>
+          </figure>
+
+          <figure>
+            <p class="fig-finding">Feature Ranking: KEAP1/STK11 rank as top survival predictors.</p>
+            <img src="figures/Top Co-occurring Mutations in STK11-Mutant Samples.png" alt="Feature Importance">
+            <figcaption><strong>Figure 4. RSF Importance.</strong> Permutation importance ranking showing the dominance 
+            of genomic drivers over clinical variables.</figcaption>
+          </figure>
+
+          <figure>
+            <p class="fig-finding">Predictive Performance: Integrated Immuno-Score achieves AUC 0.78.</p>
+            <img src="figures/Integrated Model2-Year Survival Prediction.png" alt="ROC Curves">
+            <figcaption><strong>Figure 5. Time-dependent ROC.</strong> Validation of the integrated scoring system 
+            at the 24-month clinical milestone.</figcaption>
+          </figure>
+
+        </div>
+      </div>
+    </section>
+
+    <section id="team">
+      <div class="container">
+        <h2>Team</h2>
+        <ul>
+          <li>Haowen Wu · University of Michigan School of Public Health</li>
+        </ul>
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    <div class="container">
+      <p>
+        <strong>Data Access:</strong> Patient-level MSK-CHORD data are available through 
+        <a href="https://cbioportal.org" target="_blank">cBioPortal</a> under controlled access. 
+        Research code and analytical Rmd files are available in the project repository.
+      </p>
+      <p>
+        Questions? <a href="mailto:hwwu@umich.edu">haowenwu@umich.edu</a>
+      </p>
+      <p style="font-size: 0.8em; margin-top: 20px;">© 2026 BIOS 629 Final Project. All Rights Reserved.</p>
+    </div>
+  </footer>
+
+</body>
+</html>
